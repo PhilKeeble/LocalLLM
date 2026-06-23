@@ -84,6 +84,25 @@ def display_name(model_id: str) -> str:
     return model_id.replace("_", " ").replace("-", " ").title()
 
 
+def model_source_text(model_id: str, values: dict[str, str]) -> str:
+    return " ".join(
+        [
+            model_id,
+            values.get("model", ""),
+            values.get("hf-repo", ""),
+        ]
+    ).lower()
+
+
+def is_qwen_model(model_source: str) -> bool:
+    return "qwen" in model_source
+
+
+def is_gemma4_model(model_source: str) -> bool:
+    normalized = model_source.replace("_", "-").replace(".", "-")
+    return "gemma4" in normalized or "gemma-4" in normalized
+
+
 def pi_model(model_id: str, values: dict[str, str], default_max_tokens: int) -> dict[str, Any]:
     context_window = parse_positive_int(
         values.get("ctx-size") or values.get("c") or values.get("llama_arg_ctx_size"),
@@ -110,22 +129,26 @@ def pi_model(model_id: str, values: dict[str, str], default_max_tokens: int) -> 
         },
     }
 
-    if reasoning:
+    model_source = model_source_text(model_id, values)
+    qwen_model = is_qwen_model(model_source)
+    gemma4_model = is_gemma4_model(model_source)
+
+    if reasoning and not gemma4_model:
         model["thinkingLevelMap"] = dict(THINKING_LEVEL_MAP)
 
-    model_source = " ".join(
-        [
-            model_id,
-            values.get("model", ""),
-            values.get("hf-repo", ""),
-        ]
-    ).lower()
-    if reasoning and "qwen" in model_source:
+    if reasoning and qwen_model:
         model["compat"] = {
             "thinkingFormat": "qwen-chat-template",
             "chatTemplateKwargs": {
                 "enable_thinking": {"$var": "thinking.enabled"},
                 "preserve_thinking": True,
+            },
+        }
+    elif reasoning and gemma4_model:
+        model["compat"] = {
+            "thinkingFormat": "chat-template",
+            "chatTemplateKwargs": {
+                "enable_thinking": {"$var": "thinking.enabled"},
             },
         }
 
@@ -136,20 +159,23 @@ def generate_config(
     models: list[tuple[str, dict[str, str]]],
     base_url: str,
     provider_name: str,
-    api_key_env: str,
+    api_key: str,
     default_max_tokens: int,
 ) -> dict[str, Any]:
+    if not api_key:
+        api_key = "pi"
+
     return {
         "providers": {
             provider_name: {
                 "baseUrl": base_url.rstrip("/"),
                 "api": "openai-completions",
-                "apiKey": f"${api_key_env}",
-                "authHeader": False,
+                "apiKey": api_key,
+                "authHeader": True,
                 "compat": {
-                    "supportsDeveloperRole": True,
-                    "supportsReasoningEffort": True,
-                    "supportsUsageInStreaming": True,
+                    "supportsDeveloperRole": False,
+                    "supportsReasoningEffort": False,
+                    "supportsUsageInStreaming": False,
                     "maxTokensField": "max_tokens",
                 },
                 "models": [
@@ -188,14 +214,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Provider identifier shown in the generated configuration.",
     )
     parser.add_argument(
-        "--api-key-env",
-        default="LLAMA_API_KEY",
-        help="Environment variable Pi should read for the API key.",
+        "--api-key",
+        default="",
+        help="Literal API key to write into pi.json. Omit to use 'pi'.",
     )
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=32000,
+        default=64000,
         help="Default maximum output tokens for generated model entries.",
     )
     return parser
@@ -213,7 +239,7 @@ def main() -> int:
             models=models,
             base_url=args.base_url,
             provider_name=args.provider_name,
-            api_key_env=args.api_key_env,
+            api_key=args.api_key,
             default_max_tokens=args.max_tokens,
         )
 

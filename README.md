@@ -1,5 +1,7 @@
 # Local LLM Docker Compose
 
+This repo allows you to host LLMs locally in a network restricted container so that the model can't reach the internet and send telemetry / data, but still allows you to connect to it through caddy.
+
 This Compose stack publishes Caddy on `0.0.0.0:8080` so other devices on your network can call the model API.
 
 The LLM container is only attached to the `llm_internal` Docker network, which is marked `internal: true`. It does not publish ports directly to the host. Caddy is attached to both networks and proxies requests to `llm:8080`.
@@ -34,11 +36,11 @@ python3 scripts/detect_host_env.py
 ```
 
 4. Copy the printed `UBUNTU_VERSION`, `CUDA_VERSION`, and `CUDA_DOCKER_ARCH` values into `.env`.
-5. Edit `models/models.ini` so its model paths and tuning match your GGUF files.
+5. Edit `models/models.ini` so its model paths and tuning match your GGUF files and desired llama args.
 6. Build and start the stack:
 
 ```powershell
-docker compose up -d
+docker compose up 
 ```
 
 The API will be reachable from the host and LAN at:
@@ -70,6 +72,63 @@ Docker does not apply CPU or RAM limits unless configured, so this Compose file 
 
 `CUDA_BUILD_TARGET` is fixed to `llama-server` in Compose. The GPU-specific performance setting is `CUDA_DOCKER_ARCH`, which maps to CMake's `CMAKE_CUDA_ARCHITECTURES`.
 
+### Checking CUDA in WSL
+
+From inside WSL, check that the NVIDIA driver is visible:
+
+```bash
+nvidia-smi
+```
+
+If that works, Docker GPU passthrough should have the driver side available. The CUDA version shown by `nvidia-smi` is the maximum CUDA runtime API version supported by the Windows NVIDIA driver.
+
+To check whether the full CUDA toolkit is installed inside WSL:
+
+```bash
+nvcc --version
+```
+
+If `nvcc` is missing, the CUDA toolkit is not installed in WSL. That is usually fine for this project because the Docker image builds with an NVIDIA CUDA base image. The important checks are:
+
+```bash
+nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
+
+The second command confirms Docker containers can see the GPU.
+
+## Checking WSL resource limits
+
+The detection script also reports WSL memory, CPU, and `.wslconfig` findings:
+
+```bash
+python3 scripts/detect_host_env.py
+```
+
+It checks:
+
+- RAM currently visible inside WSL from `/proc/meminfo`
+- CPU threads currently visible inside WSL
+- `%UserProfile%\.wslconfig`, when it can find it from WSL
+- low memory or processor caps that may bottleneck Docker builds or large local LLMs
+
+Example `.wslconfig`:
+
+```ini
+[wsl2]
+memory=64GB
+processors=16
+swap=16GB
+```
+
+After changing `.wslconfig`, restart WSL from Windows:
+
+```powershell
+wsl --shutdown
+```
+
+Then reopen the WSL distro and run the detection script again. If Docker Desktop has its own resource limits enabled, check Docker Desktop settings as well.
+
 ## Model router
 
 The container runs `llama-server` in router mode:
@@ -79,7 +138,7 @@ The container runs `llama-server` in router mode:
 --models-max 1
 ```
 
-No model is loaded directly by the Compose command. The router loads the requested model using its section in `models/models.ini`. With `--models-max 1`, only one model instance can be loaded at a time, which is appropriate for a single 24 GB GPU.
+No model is loaded directly by the Compose command. The router loads the requested model using its section in `models/models.ini`. With `--models-max 1`, only one model instance can be loaded at a time so it will automatically unload models for you if you request another.
 
 Models sleep after 15 minutes without inference requests because the global preset contains:
 
@@ -154,10 +213,17 @@ python3 scripts/generate_pi_config.py \
   --base-url https://llm.home.arpa:8080/v1
 ```
 
-The generated provider reads its API key from `LLAMA_API_KEY`:
+By default the generated provider sends a placeholder bearer token:
+
+```json
+"apiKey": "pi",
+"authHeader": true
+```
+
+If Caddy or llama-server requires a real bearer token, generate the config with the literal key:
 
 ```bash
-export LLAMA_API_KEY='your-api-key'
+python3 scripts/generate_pi_config.py --base-url http://127.0.0.1:8080/v1 --api-key 'your-api-key'
 ```
 
 Pi reads custom providers from:
@@ -175,7 +241,7 @@ python3 scripts/generate_pi_config.py \
   --models-ini models/models.ini \
   --output pi.json \
   --provider-name local-llama \
-  --api-key-env LLAMA_API_KEY \
+  --api-key pi \
   --max-tokens 16384
 ```
 
@@ -184,51 +250,18 @@ The generated file is deliberately Pi-specific and intended as an editable start
 - model IDs and display names
 - context windows from `ctx-size`
 - configurable output-token limits
-- reasoning support and `thinkingLevelMap`
+- reasoning support and model-specific thinking controls
 - Qwen chat-template thinking controls
+- Gemma 4 boolean chat-template thinking controls
 - text or image input when `mmproj` is configured
 - zero local inference costs
 - llama.cpp-compatible request settings
 
-The generated provider uses llama.cpp-compatible defaults:
-
-```json
-{
-  "supportsDeveloperRole": false,
-  "supportsReasoningEffort": false,
-  "supportsUsageInStreaming": false,
-  "maxTokensField": "max_tokens"
-}
-```
-
-Qwen reasoning models additionally receive `compat.thinkingFormat = "qwen-chat-template"`. Pi expects `thinkingFormat` under `compat`, not at the model's top level.
+Qwen reasoning models additionally receive `compat.thinkingFormat = "qwen-chat-template"`.
+Gemma 4 reasoning models receive `compat.thinkingFormat = "chat-template"` with `chatTemplateKwargs.enable_thinking` wired to Pi's thinking toggle. Gemma 4 does not receive a `thinkingLevelMap` because llama.cpp exposes this as an on/off template setting rather than meaningful low/medium/high levels.
+Pi expects `thinkingFormat` under `compat`, not at the model's top level.
 
 After generation, edit `pi.json` directly for model-specific preferences that cannot be inferred from `models.ini`, such as a custom display name, a different `maxTokens`, or manually declaring image support.
-
-## Checking CUDA in WSL
-
-From inside WSL, check that the NVIDIA driver is visible:
-
-```bash
-nvidia-smi
-```
-
-If that works, Docker GPU passthrough should have the driver side available. The CUDA version shown by `nvidia-smi` is the maximum CUDA runtime API version supported by the Windows NVIDIA driver.
-
-To check whether the full CUDA toolkit is installed inside WSL:
-
-```bash
-nvcc --version
-```
-
-If `nvcc` is missing, the CUDA toolkit is not installed in WSL. That is usually fine for this project because the Docker image builds with an NVIDIA CUDA base image. The important checks are:
-
-```bash
-nvidia-smi
-docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
-```
-
-The second command confirms Docker containers can see the GPU.
 
 # Normal usage
 
@@ -302,34 +335,3 @@ docker inspect $(docker compose ps -q llm) --format '{{json .NetworkSettings.Net
 
 The `llm` container should only be attached to the internal network. The `caddy` container should be attached to both the public ingress network and the internal LLM network.
 
-## Checking WSL resource limits
-
-The detection script also reports WSL memory, CPU, and `.wslconfig` findings:
-
-```bash
-python3 scripts/detect_host_env.py
-```
-
-It checks:
-
-- RAM currently visible inside WSL from `/proc/meminfo`
-- CPU threads currently visible inside WSL
-- `%UserProfile%\.wslconfig`, when it can find it from WSL
-- low memory or processor caps that may bottleneck Docker builds or large local LLMs
-
-Example `.wslconfig`:
-
-```ini
-[wsl2]
-memory=64GB
-processors=16
-swap=16GB
-```
-
-After changing `.wslconfig`, restart WSL from Windows:
-
-```powershell
-wsl --shutdown
-```
-
-Then reopen the WSL distro and run the detection script again. If Docker Desktop has its own resource limits enabled, check Docker Desktop settings as well.
