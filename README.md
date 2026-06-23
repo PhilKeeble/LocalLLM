@@ -81,6 +81,14 @@ The container runs `llama-server` in router mode:
 
 No model is loaded directly by the Compose command. The router loads the requested model using its section in `models/models.ini`. With `--models-max 1`, only one model instance can be loaded at a time, which is appropriate for a single 24 GB GPU.
 
+Models sleep after 15 minutes without inference requests because the global preset contains:
+
+```ini
+sleep-idle-seconds = 900
+```
+
+Sleeping releases model and KV-cache memory. The next inference request automatically reloads the model.
+
 The `[*]` section contains defaults inherited by every model. A named section defines a routable model:
 
 ```ini
@@ -130,6 +138,46 @@ curl 'http://localhost:8080/models?reload=1'
 ```
 
 The container listens on `8080` internally. Caddy publishes that as host/LAN port `8080`.
+
+## Coding agent configuration
+
+Generate a Pi custom-provider configuration from `models/models.ini`:
+
+```bash
+python3 scripts/generate_pi_config.py
+```
+
+This creates `pi.json`. Set the URL used by the machine running Pi when needed:
+
+```bash
+python3 scripts/generate_pi_config.py \
+  --base-url https://llm.home.arpa:8080/v1
+```
+
+The generated provider reads its API key from `LLAMA_API_KEY`:
+
+```bash
+export LLAMA_API_KEY='your-api-key'
+```
+
+Pi reads custom providers from:
+
+```text
+~/.pi/agent/models.json
+```
+
+Use the generated `pi.json` as that file, or merge its `providers.local-llama` object into an existing `models.json`. Generated model IDs match the section names in `models.ini`, such as `qwen-code`.
+
+Useful generator options:
+
+```bash
+python3 scripts/generate_pi_config.py \
+  --models-ini models/models.ini \
+  --output pi.json \
+  --provider-name local-llama \
+  --api-key-env LLAMA_API_KEY \
+  --max-tokens 16384
+```
 
 ## Checking CUDA in WSL
 
