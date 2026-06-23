@@ -25,7 +25,7 @@ git clone <repo-url> LocalLLM
 
 Keeping the repo and `models/` directory on the Linux filesystem avoids the Windows-to-WSL filesystem bridge during Docker builds and model reads.
 
-1. Put your GGUF model file under `./models`.
+1. Put your GGUF model files under `./models`.
 2. Copy `.env.example` to `.env`.
 3. From inside the WSL Ubuntu distro used by Docker, run:
 
@@ -34,7 +34,7 @@ python3 scripts/detect_host_env.py
 ```
 
 4. Copy the printed `UBUNTU_VERSION`, `CUDA_VERSION`, and `CUDA_DOCKER_ARCH` values into `.env`.
-5. Edit `LLAMA_MODEL`, `LLAMA_SPEC_DRAFT_MODEL`, and the llama-server tuning values.
+5. Edit `models/models.ini` so its model paths and tuning match your GGUF files.
 6. Build and start the stack:
 
 ```powershell
@@ -70,25 +70,66 @@ Docker does not apply CPU or RAM limits unless configured, so this Compose file 
 
 `CUDA_BUILD_TARGET` is fixed to `llama-server` in Compose. The GPU-specific performance setting is `CUDA_DOCKER_ARCH`, which maps to CMake's `CMAKE_CUDA_ARCHITECTURES`.
 
-## llama-server arguments
+## Model router
 
-The long `llama-server` command is represented as a YAML argument list in `docker-compose.yml`. Edit `.env` for the common values:
-
-```env
-LLAMA_MODEL=Qwen3.6-27B-NEO-CODE-HERE-2T-OT-Q5_K_S.gguf
-LLAMA_SPEC_DRAFT_MODEL=Qwen3.6-27B-DFlash-Q4_K_M.gguf
-LLAMA_CONTEXT_SIZE=128000
-LLAMA_BATCH_SIZE=2048
-LLAMA_UBATCH_SIZE=512
-```
-
-This avoids fragile shell quoting for arguments like:
+The container runs `llama-server` in router mode:
 
 ```text
---chat-template-kwargs '{"preserve_thinking":true}'
+--models-preset /models/models.ini
+--models-max 1
 ```
 
-The container still listens on `8080` internally. Caddy publishes that as host/LAN port `8080`.
+No model is loaded directly by the Compose command. The router loads the requested model using its section in `models/models.ini`. With `--models-max 1`, only one model instance can be loaded at a time, which is appropriate for a single 24 GB GPU.
+
+The `[*]` section contains defaults inherited by every model. A named section defines a routable model:
+
+```ini
+[*]
+n-gpu-layers = all
+parallel = 1
+flash-attn = on
+
+[qwen-code]
+model = /models/Qwen3.6-27B-NEO-CODE-HERE-2T-OT-Q5_K_S.gguf
+model-draft = /models/Qwen3.6-27B-DFlash-Q4_K_M.gguf
+spec-type = dflash
+ctx-size = 128000
+```
+
+Add another section to make another model available. The Docker Compose file and `.env` do not need model-specific changes.
+
+Select a model using the OpenAI-compatible `model` field:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen-code",
+    "messages": [
+      {"role": "user", "content": "Write a Python function."}
+    ]
+  }'
+```
+
+The router autoloads an unloaded model when it is requested. You can also inspect and control models directly:
+
+```bash
+curl http://localhost:8080/models
+curl -X POST http://localhost:8080/models/load \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen-code"}'
+curl -X POST http://localhost:8080/models/unload \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen-code"}'
+```
+
+After changing `models.ini`, refresh router discovery:
+
+```bash
+curl 'http://localhost:8080/models?reload=1'
+```
+
+The container listens on `8080` internally. Caddy publishes that as host/LAN port `8080`.
 
 ## Checking CUDA in WSL
 
