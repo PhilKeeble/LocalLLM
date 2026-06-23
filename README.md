@@ -179,6 +179,32 @@ python3 scripts/generate_pi_config.py \
   --max-tokens 16384
 ```
 
+The generated file is deliberately Pi-specific and intended as an editable starting point. It includes:
+
+- model IDs and display names
+- context windows from `ctx-size`
+- configurable output-token limits
+- reasoning support and `thinkingLevelMap`
+- Qwen chat-template thinking controls
+- text or image input when `mmproj` is configured
+- zero local inference costs
+- llama.cpp-compatible request settings
+
+The generated provider uses llama.cpp-compatible defaults:
+
+```json
+{
+  "supportsDeveloperRole": false,
+  "supportsReasoningEffort": false,
+  "supportsUsageInStreaming": false,
+  "maxTokensField": "max_tokens"
+}
+```
+
+Qwen reasoning models additionally receive `compat.thinkingFormat = "qwen-chat-template"`. Pi expects `thinkingFormat` under `compat`, not at the model's top level.
+
+After generation, edit `pi.json` directly for model-specific preferences that cannot be inferred from `models.ini`, such as a custom display name, a different `maxTokens`, or manually declaring image support.
+
 ## Checking CUDA in WSL
 
 From inside WSL, check that the NVIDIA driver is visible:

@@ -13,6 +13,14 @@ from typing import Any
 
 FALSE_VALUES = {"0", "false", "no", "off", "none", ""}
 TRUE_VALUES = {"1", "true", "yes", "on"}
+THINKING_LEVEL_MAP = {
+    "off": None,
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "high",
+}
 
 
 def parse_models_ini(path: Path) -> tuple[dict[str, str], list[tuple[str, dict[str, str]]]]:
@@ -103,12 +111,8 @@ def pi_model(model_id: str, values: dict[str, str], default_max_tokens: int) -> 
         },
     }
 
-    compat: dict[str, Any] = {
-        "supportsDeveloperRole": False,
-        "supportsReasoningEffort": False,
-        "supportsUsageInStreaming": False,
-        "maxTokensField": "max_tokens",
-    }
+    if reasoning:
+        model["thinkingLevelMap"] = dict(THINKING_LEVEL_MAP)
 
     model_source = " ".join(
         [
@@ -118,13 +122,14 @@ def pi_model(model_id: str, values: dict[str, str], default_max_tokens: int) -> 
         ]
     ).lower()
     if reasoning and "qwen" in model_source:
-        compat["thinkingFormat"] = "qwen-chat-template"
-        compat["chatTemplateKwargs"] = {
-            "enable_thinking": {"$var": "thinking.enabled"},
-            "preserve_thinking": True,
+        model["compat"] = {
+            "thinkingFormat": "qwen-chat-template",
+            "chatTemplateKwargs": {
+                "enable_thinking": {"$var": "thinking.enabled"},
+                "preserve_thinking": True,
+            },
         }
 
-    model["compat"] = compat
     return model
 
 
@@ -141,6 +146,13 @@ def generate_config(
                 "baseUrl": base_url.rstrip("/"),
                 "api": "openai-completions",
                 "apiKey": f"${api_key_env}",
+                "authHeader": True,
+                "compat": {
+                    "supportsDeveloperRole": False,
+                    "supportsReasoningEffort": False,
+                    "supportsUsageInStreaming": False,
+                    "maxTokensField": "max_tokens",
+                },
                 "models": [
                     pi_model(model_id, values, default_max_tokens)
                     for model_id, values in models
