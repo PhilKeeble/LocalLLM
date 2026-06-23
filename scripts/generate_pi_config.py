@@ -14,7 +14,6 @@ from typing import Any
 FALSE_VALUES = {"0", "false", "no", "off", "none", ""}
 TRUE_VALUES = {"1", "true", "yes", "on"}
 THINKING_LEVEL_MAP = {
-    "off": None,
     "minimal": "low",
     "low": "low",
     "medium": "medium",
@@ -146,11 +145,11 @@ def generate_config(
                 "baseUrl": base_url.rstrip("/"),
                 "api": "openai-completions",
                 "apiKey": f"${api_key_env}",
-                "authHeader": True,
+                "authHeader": False,
                 "compat": {
-                    "supportsDeveloperRole": False,
-                    "supportsReasoningEffort": False,
-                    "supportsUsageInStreaming": False,
+                    "supportsDeveloperRole": True,
+                    "supportsReasoningEffort": True,
+                    "supportsUsageInStreaming": True,
                     "maxTokensField": "max_tokens",
                 },
                 "models": [
@@ -196,7 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=16384,
+        default=32000,
         help="Default maximum output tokens for generated model entries.",
     )
     return parser
