@@ -4,7 +4,7 @@ This Compose stack publishes Caddy on `0.0.0.0:8080` so other devices on your ne
 
 The LLM container is only attached to the `llm_internal` Docker network, which is marked `internal: true`. It does not publish ports directly to the host. Caddy is attached to both networks and proxies requests to `llm:8080`.
 
-## Usage
+# Install / Setup
 
 Clone this repository directly inside your WSL Ubuntu filesystem, not under `/mnt/c/...`.
 
@@ -114,6 +114,78 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
 The second command confirms Docker containers can see the GPU.
+
+# Normal usage
+
+Start the stack in the background:
+
+```bash
+docker compose up -d
+```
+
+Stop and remove the containers and Docker networks, while keeping the built images and `./models` files:
+
+```bash
+docker compose down
+```
+
+Rebuild the LLM image when you change build args, CUDA version, Ubuntu version, or want to pick up a newer BeeLlama source version:
+
+```bash
+docker compose up -d --build
+```
+
+Force a fresh rebuild without cached Docker layers:
+
+```bash
+docker compose build --no-cache llm
+docker compose up -d
+```
+
+Avoid this unless you intentionally want to delete named Docker volumes:
+
+```bash
+docker compose down -v
+```
+
+## Checking network isolation
+
+Open a shell inside the running LLM container:
+
+```bash
+docker compose exec llm /bin/bash
+```
+
+If Bash is not available:
+
+```bash
+docker compose exec llm /bin/sh
+```
+
+From inside the container, the local llama-server health check should work:
+
+```bash
+curl -f http://localhost:8080/health
+```
+
+External network checks should fail because the `llm` service is only attached to the `internal: true` Docker network:
+
+```bash
+curl -I https://example.com
+curl -I https://1.1.1.1
+ping -c 3 1.1.1.1
+```
+
+Depending on the image, `ping` may not be installed or may be blocked by container capabilities. A failed `curl` to an external address is the more useful check.
+
+From the host, inspect the networks attached to the LLM container:
+
+```bash
+docker compose ps
+docker inspect $(docker compose ps -q llm) --format '{{json .NetworkSettings.Networks}}'
+```
+
+The `llm` container should only be attached to the internal network. The `caddy` container should be attached to both the public ingress network and the internal LLM network.
 
 ## Checking WSL resource limits
 
