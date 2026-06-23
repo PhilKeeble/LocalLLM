@@ -1,0 +1,148 @@
+# Local LLM Docker Compose
+
+This Compose stack publishes Caddy on `0.0.0.0:8080` so other devices on your network can call the model API.
+
+The LLM container is only attached to the `llm_internal` Docker network, which is marked `internal: true`. It does not publish ports directly to the host. Caddy is attached to both networks and proxies requests to `llm:8080`.
+
+## Usage
+
+Clone this repository directly inside your WSL Ubuntu filesystem, not under `/mnt/c/...`.
+
+Good:
+
+```bash
+cd ~
+git clone <repo-url> LocalLLM
+cd LocalLLM
+```
+
+Avoid:
+
+```bash
+cd /mnt/c/Users/<you>/Documents/GitHub
+git clone <repo-url> LocalLLM
+```
+
+Keeping the repo and `models/` directory on the Linux filesystem avoids the Windows-to-WSL filesystem bridge during Docker builds and model reads.
+
+1. Put your GGUF model file under `./models`.
+2. Copy `.env.example` to `.env`.
+3. From inside the WSL Ubuntu distro used by Docker, run:
+
+```bash
+python3 scripts/detect_host_env.py
+```
+
+4. Copy the printed `UBUNTU_VERSION`, `CUDA_VERSION`, and `CUDA_DOCKER_ARCH` values into `.env`.
+5. Edit `LLAMA_MODEL`, `LLAMA_SPEC_DRAFT_MODEL`, and the llama-server tuning values.
+6. Build and start the stack:
+
+```powershell
+docker compose up -d
+```
+
+The API will be reachable from the host and LAN at:
+
+```text
+http://<host-ip>:8080
+```
+
+For stricter egress blocking, add host firewall rules against the Docker network or container. Docker's `internal: true` network is the main isolation boundary in this Compose file.
+
+## CUDA and WSL notes
+
+The LLM image is built from BeeLlama's CUDA Dockerfile:
+
+```text
+https://github.com/Anbeeld/beellama.cpp/blob/main/.devops/cuda.Dockerfile
+```
+
+The build uses the `server` target and passes:
+
+- `UBUNTU_VERSION`
+- `CUDA_VERSION`
+- `CUDA_DOCKER_ARCH`
+- `CUDA_BUILD_TARGET=llama-server`
+
+Use `nvidia-smi` to check the maximum CUDA version supported by your installed NVIDIA driver. The CUDA runtime in the container should be supported by that driver. It does not have to exactly match a CUDA toolkit installed in WSL; the NVIDIA driver compatibility is the important part.
+
+Docker does not apply CPU or RAM limits unless configured, so this Compose file deliberately does not set `cpus`, `mem_limit`, or `deploy.resources.limits`. It does request all GPUs with `gpus: all`.
+
+`CUDA_BUILD_TARGET` is fixed to `llama-server` in Compose. The GPU-specific performance setting is `CUDA_DOCKER_ARCH`, which maps to CMake's `CMAKE_CUDA_ARCHITECTURES`.
+
+## llama-server arguments
+
+The long `llama-server` command is represented as a YAML argument list in `docker-compose.yml`. Edit `.env` for the common values:
+
+```env
+LLAMA_MODEL=Qwen3.6-27B-NEO-CODE-HERE-2T-OT-Q5_K_S.gguf
+LLAMA_SPEC_DRAFT_MODEL=Qwen3.6-27B-DFlash-Q4_K_M.gguf
+LLAMA_CONTEXT_SIZE=128000
+LLAMA_BATCH_SIZE=2048
+LLAMA_UBATCH_SIZE=512
+```
+
+This avoids fragile shell quoting for arguments like:
+
+```text
+--chat-template-kwargs '{"preserve_thinking":true}'
+```
+
+The container still listens on `8080` internally. Caddy publishes that as host/LAN port `8080`.
+
+## Checking CUDA in WSL
+
+From inside WSL, check that the NVIDIA driver is visible:
+
+```bash
+nvidia-smi
+```
+
+If that works, Docker GPU passthrough should have the driver side available. The CUDA version shown by `nvidia-smi` is the maximum CUDA runtime API version supported by the Windows NVIDIA driver.
+
+To check whether the full CUDA toolkit is installed inside WSL:
+
+```bash
+nvcc --version
+```
+
+If `nvcc` is missing, the CUDA toolkit is not installed in WSL. That is usually fine for this project because the Docker image builds with an NVIDIA CUDA base image. The important checks are:
+
+```bash
+nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
+
+The second command confirms Docker containers can see the GPU.
+
+## Checking WSL resource limits
+
+The detection script also reports WSL memory, CPU, and `.wslconfig` findings:
+
+```bash
+python3 scripts/detect_host_env.py
+```
+
+It checks:
+
+- RAM currently visible inside WSL from `/proc/meminfo`
+- CPU threads currently visible inside WSL
+- `%UserProfile%\.wslconfig`, when it can find it from WSL
+- low memory or processor caps that may bottleneck Docker builds or large local LLMs
+
+Example `.wslconfig`:
+
+```ini
+[wsl2]
+memory=64GB
+processors=16
+swap=16GB
+```
+
+After changing `.wslconfig`, restart WSL from Windows:
+
+```powershell
+wsl --shutdown
+```
+
+Then reopen the WSL distro and run the detection script again. If Docker Desktop has its own resource limits enabled, check Docker Desktop settings as well.

@@ -1,0 +1,93 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - ingress
+      - llm_internal
+    depends_on:
+      - llm
+
+  llm:
+    image: ${LLAMA_IMAGE:-local/beellama-cuda-server:latest}
+    build:
+      context: ${BEELLAMA_REPO:-https://github.com/Anbeeld/beellama.cpp.git}
+      dockerfile: .devops/cuda.Dockerfile
+      target: server
+      args:
+        UBUNTU_VERSION: ${UBUNTU_VERSION:-22.04}
+        CUDA_VERSION: ${CUDA_VERSION:-12.4.1}
+        CUDA_DOCKER_ARCH: ${CUDA_DOCKER_ARCH:-default}
+        CUDA_BUILD_TARGET: llama-server
+    restart: unless-stopped
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -m
+      - /models/${LLAMA_MODEL:-model.gguf}
+      - --spec-draft-model
+      - /models/${LLAMA_SPEC_DRAFT_MODEL:-draft-model.gguf}
+      - --spec-type
+      - ${LLAMA_SPEC_TYPE:-dflash}
+      - --spec-dflash-cross-ctx
+      - ${LLAMA_SPEC_DFLASH_CROSS_CTX:-1024}
+      - -np
+      - ${LLAMA_PARALLEL_SLOTS:-1}
+      - --kv-unified
+      - -ngl
+      - ${LLAMA_N_GPU_LAYERS:-all}
+      - --spec-draft-ngl
+      - ${LLAMA_SPEC_DRAFT_N_GPU_LAYERS:-all}
+      - -b
+      - ${LLAMA_BATCH_SIZE:-2048}
+      - -ub
+      - ${LLAMA_UBATCH_SIZE:-512}
+      - --ctx-size
+      - ${LLAMA_CONTEXT_SIZE:-128000}
+      - --cache-type-k
+      - ${LLAMA_CACHE_TYPE_K:-q5_0}
+      - --cache-type-v
+      - ${LLAMA_CACHE_TYPE_V:-q4_1}
+      - --flash-attn
+      - ${LLAMA_FLASH_ATTN:-on}
+      - --jinja
+      - --no-mmap
+      - --mlock
+      - --no-host
+      - --reasoning
+      - ${LLAMA_REASONING:-on}
+      - --chat-template-kwargs
+      - '{"preserve_thinking":true}'
+      - --temp
+      - ${LLAMA_TEMP:-0.6}
+      - --top-k
+      - ${LLAMA_TOP_K:-20}
+      - --top-p
+      - ${LLAMA_TOP_P:-1.0}
+      - --min-p
+      - ${LLAMA_MIN_P:-0.0}
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    expose:
+      - "8080"
+    shm_size: ${LLM_SHM_SIZE:-16gb}
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    volumes:
+      - ./models:/models:ro
+    networks:
+      - llm_internal
+
+networks:
+  ingress:
+  llm_internal:
+    internal: true
