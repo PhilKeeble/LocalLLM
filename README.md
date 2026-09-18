@@ -200,68 +200,88 @@ The container listens on `8080` internally. Caddy publishes that as host/LAN por
 
 ## Coding agent configuration
 
-Generate a Pi custom-provider configuration from `models/models.ini`:
+Reviewed against Pi's current main (package version 0.85.1) on 2026-09-18:
+[model configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md)
+and [settings](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/settings.md).
 
 ```bash
-python3 scripts/generate_pi_config.py
+python3 scripts/generate_pi_config.py --settings-output pi-settings.json
 ```
 
-This creates `pi.json`. Set the URL used by the machine running Pi when needed:
+The default input and `pi.json` output resolve relative to this repository, even
+when running from `scripts/`. Explicit paths resolve relative to your working directory.
+Regenerate after editing `models/models.ini`; Pi does not read the INI itself.
+
+Merge `pi.json`'s `providers.local-llama` into `~/.pi/agent/models.json`.
+Merge the optional `pi-settings.json` into `~/.pi/agent/settings.json` (or your
+project's `.pi/settings.json`). Do not replace unrelated existing settings.
+Restart Pi after installing the files.
+
+The generated entries are `qwen3.8` and `qwen-uncensored`, both with the INI's
+160000-token context. The draft GGUF is managed by BeeLlama, not exposed as a Pi model.
+GPU, KV-cache and DFlash settings remain server-side. Neither model advertises
+image input without a configured `mmproj`.
+
+Qwen3.8 exposes **off, low, medium, high, xhigh** in Pi. Selecting high sends
+xhigh because Qwen3.8 does not support high natively; models with the standard
+mapping keep high as high. Unsupported minimal and max levels are hidden using
+null entries. Generic `chat-template` compatibility
+passes both `enable_thinking` and the selected `reasoning_effort` through
+`chat_template_kwargs`; the old mapping incorrectly mapped xhigh to high.
+`preserve_thinking` remains enabled for history. The uncensored model uses the
+same template assumptions; validate its tool calls and thinking toggle in Pi.
+
+Sampling (`temperature`, `top_k`, `top_p`, `min_p`) is copied from the INI into
+`samplingParams`. These values override Pi's request defaults. Streaming usage
+is enabled for token accounting; store and developer-role fields are disabled.
+The output limit remains **64000 tokens including thinking**, configurable with
+`--max-tokens`.
+
+The optional settings fragment sets each model's initial thinking level from
+`reasoning-effort` (currently xhigh), restricts model cycling to these two entries,
+and enables automatic compaction. Each model reserves its output limit plus
+4096 tokens of margin: **68096 reserved**, with **20000 recent tokens retained**.
+At 160000 context, this puts the compaction threshold around **91904 tokens**.
+This is deliberately conservative for long reasoning: it trades usable history
+for output headroom. A large newly pasted prompt or tool result can still exceed
+that margin. Use `/compact` before unusually large inputs. Compaction summarizes
+history and cannot guarantee preservation of every detail.
+
+The server's context limit and Pi's compaction threshold serve different purposes;
+waiting for the server to exhaust context is not the desired compaction workflow.
+The settings fragment does not set a thinking-token budget: effort levels remain
+model instructions, and xhigh is not a fixed token cap.
+
+Useful options:
 
 ```bash
 python3 scripts/generate_pi_config.py \
-  --base-url https://llm.home.arpa:8080/v1
-```
-
-By default the generated provider sends a placeholder bearer token:
-
-```json
-"apiKey": "pi",
-"authHeader": true
-```
-
-If Caddy or llama-server requires a real bearer token, generate the config with the literal key:
-
-```bash
-python3 scripts/generate_pi_config.py --base-url http://127.0.0.1:8080/v1 --api-key 'your-api-key'
-```
-
-Pi reads custom providers from:
-
-```text
-~/.pi/agent/models.json
-```
-
-Use the generated `pi.json` as that file, or merge its `providers.local-llama` object into an existing `models.json`. Generated model IDs match the section names in `models.ini`, such as `qwen-code`.
-
-Useful generator options:
-
-```bash
-python3 scripts/generate_pi_config.py \
-  --models-ini models/models.ini \
-  --output pi.json \
+  --base-url http://127.0.0.1:8080/v1 \
   --provider-name local-llama \
-  --api-key pi \
-  --max-tokens 16384
+  --max-tokens 64000 \
+  --output pi.json \
+  --settings-output pi-settings.json
 ```
 
-The generated file is deliberately Pi-specific and intended as an editable starting point. It includes:
+Use the host's LAN address if Pi runs on another machine. The supplied Caddy
+configuration serves HTTP, so use HTTPS only if you separately configured TLS.
+The placeholder API key is `pi`. `--api-key '$LOCAL_LLM_API_KEY'` writes an explicit
+Pi environment-variable reference; set that variable wherever Pi runs if auth is
+configured. A literal key can also be supplied.
 
-- model IDs and display names
-- context windows from `ctx-size`
-- configurable output-token limits
-- reasoning support and model-specific thinking controls
-- Qwen chat-template thinking controls
-- Gemma 4 boolean chat-template thinking controls
-- text or image input when `mmproj` is configured
-- zero local inference costs
-- llama.cpp-compatible request settings
+Other optional Pi settings worth considering:
 
-Qwen reasoning models additionally receive `compat.thinkingFormat = "qwen-chat-template"`.
-Gemma 4 reasoning models receive `compat.thinkingFormat = "chat-template"` with `chatTemplateKwargs.enable_thinking` wired to Pi's thinking toggle. Gemma 4 does not receive a `thinkingLevelMap` because llama.cpp exposes this as an on/off template setting rather than meaningful low/medium/high levels.
-Pi expects `thinkingFormat` under `compat`, not at the model's top level.
+- `showCacheMissNotices: true` for cache and compaction diagnostics.
+- `retry.provider.timeoutMs: 3600000` if long thinking requests hit a total request timeout;
+  `httpIdleTimeoutMs` is separate and concerns periods without incoming data.
+- On Windows, `defaultTools: ["read", "powershell", "edit", "write"]` for native shell use.
+  Leave the normal bash tools for WSL.
+- `pi --offline` disables startup network operations while keeping the configured
+  local inference endpoint usable. This is separate from Docker network isolation.
 
-After generation, edit `pi.json` directly for model-specific preferences that cannot be inferred from `models.ini`, such as a custom display name, a different `maxTokens`, or manually declaring image support.
+Select the normal model with `pi --provider local-llama --model qwen3.8 --thinking xhigh`.
+Use `/thinking` to change effort and `/model` to switch models. Switching models
+will cause BeeLlama to unload the other model because the router allows one at a time.
 
 # Normal usage
 

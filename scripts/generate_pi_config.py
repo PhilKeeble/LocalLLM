@@ -13,6 +13,15 @@ from typing import Any
 
 FALSE_VALUES = {"0", "false", "no", "off", "none", ""}
 TRUE_VALUES = {"1", "true", "yes", "on"}
+REPO_ROOT = Path(__file__).resolve().parents[1]
+QWEN38_THINKING_LEVEL_MAP = {
+    "minimal": None,
+    "low": "low",
+    "medium": "medium",
+    "high": "xhigh",
+    "xhigh": "xhigh",
+    "max": None,
+}
 THINKING_LEVEL_MAP = {
     "minimal": "low",
     "low": "low",
@@ -132,11 +141,22 @@ def pi_model(model_id: str, values: dict[str, str], default_max_tokens: int) -> 
     model_source = model_source_text(model_id, values)
     qwen_model = is_qwen_model(model_source)
     gemma4_model = is_gemma4_model(model_source)
+    qwen38_model = "qwen3.8" in model_source
 
     if reasoning and not gemma4_model:
         model["thinkingLevelMap"] = dict(THINKING_LEVEL_MAP)
 
-    if reasoning and qwen_model:
+    if reasoning and qwen38_model:
+        model["thinkingLevelMap"] = dict(QWEN38_THINKING_LEVEL_MAP)
+        model["compat"] = {
+            "thinkingFormat": "chat-template",
+            "chatTemplateKwargs": {
+                "enable_thinking": {"$var": "thinking.enabled"},
+                "reasoning_effort": {"$var": "thinking.effort"},
+                "preserve_thinking": True,
+            },
+        }
+    elif reasoning and qwen_model:
         model["compat"] = {
             "thinkingFormat": "qwen-chat-template",
             "chatTemplateKwargs": {
@@ -152,6 +172,17 @@ def pi_model(model_id: str, values: dict[str, str], default_max_tokens: int) -> 
             },
         }
 
+    sampling = {}
+    for ini_key, api_key, convert in (
+        ("temp", "temperature", float),
+        ("top-k", "top_k", int),
+        ("top-p", "top_p", float),
+        ("min-p", "min_p", float),
+    ):
+        if ini_key in values:
+            sampling[api_key] = convert(values[ini_key])
+    if sampling:
+        model["samplingParams"] = sampling
     return model
 
 
@@ -173,9 +204,10 @@ def generate_config(
                 "apiKey": api_key,
                 "authHeader": True,
                 "compat": {
+                    "supportsStore": False,
                     "supportsDeveloperRole": False,
                     "supportsReasoningEffort": False,
-                    "supportsUsageInStreaming": False,
+                    "supportsUsageInStreaming": True,
                     "maxTokensField": "max_tokens",
                 },
                 "models": [
@@ -187,6 +219,27 @@ def generate_config(
     }
 
 
+def generate_settings(models, provider_name, default_max_tokens):
+    """Generate a settings fragment for merging, never install it automatically."""
+    thinking = {}
+    compaction = {}
+    for model_id, values in models:
+        model = pi_model(model_id, values, default_max_tokens)
+        key = f"{provider_name}/{model_id}"
+        effort = values.get("reasoning-effort")
+        if model["reasoning"] and effort in {"low", "medium", "xhigh"}:
+            thinking[key] = effort
+        reserve = model["maxTokens"] + 4096
+        if reserve >= model["contextWindow"]:
+            raise ValueError(f"[{model_id}] output limit leaves no compaction headroom; reduce --max-tokens.")
+        compaction[key] = {"reserveTokens": reserve, "keepRecentTokens": min(20000, (model["contextWindow"] - reserve) // 2)}
+    return {
+        "modelThinkingLevels": thinking,
+        "enabledModels": [f"{provider_name}/{model_id}" for model_id, _ in models],
+        "compaction": {"enabled": True, "modelOverrides": compaction},
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate Pi configuration from a llama-server models.ini file."
@@ -194,14 +247,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--models-ini",
         type=Path,
-        default=Path("models/models.ini"),
+        default=REPO_ROOT / "models/models.ini",
         help="Path to the llama-server model preset file.",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("pi.json"),
+        default=REPO_ROOT / "pi.json",
         help="Output path. Defaults to pi.json.",
+    )
+    parser.add_argument(
+        "--settings-output", type=Path,
+        help="Optionally write a separate settings.json fragment for merging into Pi settings.",
     )
     parser.add_argument(
         "--base-url",
@@ -242,9 +299,15 @@ def main() -> int:
             api_key=args.api_key,
             default_max_tokens=args.max_tokens,
         )
+        settings = generate_settings(models, args.provider_name, args.max_tokens) if args.settings_output else None
+        if args.settings_output and args.settings_output.resolve() == args.output.resolve():
+            raise ValueError("Model and settings output paths must be different.")
 
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        if settings is not None:
+            args.settings_output.parent.mkdir(parents=True, exist_ok=True)
+            args.settings_output.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     except (OSError, configparser.Error, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
