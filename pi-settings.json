@@ -1,20 +1,14 @@
 {
   "modelThinkingLevels": {
-    "local-llama/qwen-uncensored": "medium",
-    "local-llama/qwen3.8": "xhigh"
+    "local-llama/qwen-uncensored": "medium"
   },
   "enabledModels": [
-    "local-llama/qwen-uncensored",
-    "local-llama/qwen3.8"
+    "local-llama/qwen-uncensored"
   ],
   "compaction": {
     "enabled": true,
     "modelOverrides": {
       "local-llama/qwen-uncensored": {
-        "reserveTokens": 68096,
-        "keepRecentTokens": 20000
-      },
-      "local-llama/qwen3.8": {
         "reserveTokens": 68096,
         "keepRecentTokens": 20000
       }

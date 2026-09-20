@@ -25,23 +25,19 @@ cd /mnt/c/Users/<you>/Documents/GitHub
 git clone <repo-url> LocalLLM
 ```
 
-Keeping the repo and `models/` directory on the Linux filesystem avoids the Windows-to-WSL filesystem bridge during Docker builds and model reads.
+Keeping the repo and `models/` directory on the Linux filesystem avoids the Windows-to-WSL filesystem bridge during model reads.
 
 1. Put your GGUF model files under `./models`.
-2. Copy `.env.example` to `.env`.
-3. From inside the WSL Ubuntu distro used by Docker, run:
+2. Check the model paths and tuning in `docker-compose.yml`. Settings are defined directly in this file; no `.env` file is needed.
+3. Start the stack from WSL Ubuntu with live logs:
 
 ```bash
-python3 scripts/detect_host_env.py
+docker compose up
 ```
 
-4. Copy the printed `UBUNTU_VERSION`, `CUDA_VERSION`, and `CUDA_DOCKER_ARCH` values into `.env`.
-5. Edit `models/models.ini` so its model paths and tuning match your GGUF files and desired llama args.
-6. Build and start the stack:
-
-```powershell
-docker compose up 
-```
+Compose downloads BeeLlama's prebuilt CUDA 13 server image if it is missing locally;
+no local compilation or CUDA toolkit is required. Subsequent starts can run offline
+once both service images and the model files are available locally.
 
 The API will be reachable from the host and LAN at:
 
@@ -53,24 +49,20 @@ For stricter egress blocking, add host firewall rules against the Docker network
 
 ## CUDA and WSL notes
 
-The LLM image is built from BeeLlama's CUDA Dockerfile:
+The LLM service uses `ghcr.io/anbeeld/beellama.cpp:server-cuda13`, the rolling
+prebuilt CUDA 13 server image. `pull_policy: missing` reuses the local image without
+checking for updates, downloading it only if missing. Run `docker compose pull llm`
+when you want an update, then `docker compose up` to apply it with live logs.
+A running container does not update itself, and `docker compose restart` does not
+pull or apply a new image.
 
-```text
-https://github.com/Anbeeld/beellama.cpp/blob/main/.devops/cuda.Dockerfile
-```
+Image pulls are performed by Docker; the model container retains its internal-only
+network. Keep the NVIDIA driver compatible with the CUDA runtime in the published
+image. No local Ubuntu/CUDA build-version or GPU-architecture settings are needed.
 
-The build uses the `server` target and passes:
-
-- `UBUNTU_VERSION`
-- `CUDA_VERSION`
-- `CUDA_DOCKER_ARCH`
-- `CUDA_BUILD_TARGET=llama-server`
-
-Use `nvidia-smi` to check the maximum CUDA version supported by your installed NVIDIA driver. The CUDA runtime in the container should be supported by that driver. It does not have to exactly match a CUDA toolkit installed in WSL; the NVIDIA driver compatibility is the important part.
-
-Docker does not apply CPU or RAM limits unless configured, so this Compose file deliberately does not set `cpus`, `mem_limit`, or `deploy.resources.limits`. It does request all GPUs with `gpus: all`.
-
-`CUDA_BUILD_TARGET` is fixed to `llama-server` in Compose. The GPU-specific performance setting is `CUDA_DOCKER_ARCH`, which maps to CMake's `CMAKE_CUDA_ARCHITECTURES`.
+Docker does not apply CPU or RAM limits unless configured, so this Compose file
+does not set `cpus`, `mem_limit`, or `deploy.resources.limits`. It requests all GPUs
+with `gpus: all`.
 
 ### Checking CUDA in WSL
 
@@ -88,7 +80,7 @@ To check whether the full CUDA toolkit is installed inside WSL:
 nvcc --version
 ```
 
-If `nvcc` is missing, the CUDA toolkit is not installed in WSL. That is usually fine for this project because the Docker image builds with an NVIDIA CUDA base image. The important checks are:
+If `nvcc` is missing, the CUDA toolkit is not installed in WSL. That is usually fine for this project because the prebuilt image contains the CUDA runtime. The important checks are:
 
 ```bash
 nvidia-smi
@@ -110,7 +102,7 @@ It checks:
 - RAM currently visible inside WSL from `/proc/meminfo`
 - CPU threads currently visible inside WSL
 - `%UserProfile%\.wslconfig`, when it can find it from WSL
-- low memory or processor caps that may bottleneck Docker builds or large local LLMs
+- low memory or processor caps that may bottleneck large local LLMs
 
 Example `.wslconfig`:
 
@@ -129,74 +121,37 @@ wsl --shutdown
 
 Then reopen the WSL distro and run the detection script again. If Docker Desktop has its own resource limits enabled, check Docker Desktop settings as well.
 
-## Model router
+## Single-model server
 
-The container runs `llama-server` in router mode:
+Compose starts one `llama-server` process and immediately loads Qwen Uncensored
+and its DFlash2 draft. There is no model router. The API model name remains
+`qwen-uncensored`; Caddy continues to publish port 8080 with the same network isolation.
 
-```text
---models-preset /models/models.ini
---models-max 1
-```
+The server arguments live in `docker-compose.yml`. `models/models.ini` is retained
+as input for the Pi configuration generator; the server does not read it.
 
-No model is loaded directly by the Compose command. The router loads the requested model using its section in `models/models.ini`. With `--models-max 1`, only one model instance can be loaded at a time so it will automatically unload models for you if you request another.
+`--load-mode dio` uses direct I/O when supported to avoid retaining a model-sized
+Linux file cache after loading. It still needs application RAM and temporary
+loading buffers. No cache-flushing helper or privileged container is required.
 
-Models sleep after 15 minutes without inference requests because the global preset contains:
+`--sleep-idle-seconds 900` retains the 15-minute idle timeout. Sleep releases the
+models and KV cache; the next inference request reloads them using direct I/O.
+Use `--sleep-idle-seconds -1` to keep the model loaded continuously.
 
-```ini
-sleep-idle-seconds = 900
-```
-
-Sleeping releases model and KV-cache memory. The next inference request automatically reloads the model.
-
-The `[*]` section contains defaults inherited by every model. A named section defines a routable model:
-
-```ini
-[*]
-n-gpu-layers = all
-parallel = 1
-flash-attn = on
-
-[qwen-code]
-model = /models/Qwen3.6-27B-NEO-CODE-HERE-2T-OT-Q5_K_S.gguf
-model-draft = /models/Qwen3.6-27B-DFlash-Q4_K_M.gguf
-spec-type = dflash
-ctx-size = 128000
-```
-
-Add another section to make another model available. The Docker Compose file and `.env` do not need model-specific changes.
-
-Select a model using the OpenAI-compatible `model` field:
+After changing launch arguments, recreate the service without rebuilding the image:
 
 ```bash
+docker compose up
+```
+
+Logs stay attached to the terminal; Ctrl+C stops the stack.
+
+```bash
+curl http://localhost:8080/v1/models
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen-code",
-    "messages": [
-      {"role": "user", "content": "Write a Python function."}
-    ]
-  }'
+  -d '{"model":"qwen-uncensored","messages":[{"role":"user","content":"Write a Python function."}]}'
 ```
-
-The router autoloads an unloaded model when it is requested. You can also inspect and control models directly:
-
-```bash
-curl http://localhost:8080/models
-curl -X POST http://localhost:8080/models/load \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen-code"}'
-curl -X POST http://localhost:8080/models/unload \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen-code"}'
-```
-
-After changing `models.ini`, refresh router discovery:
-
-```bash
-curl 'http://localhost:8080/models?reload=1'
-```
-
-The container listens on `8080` internally. Caddy publishes that as host/LAN port `8080`.
 
 ## Coding agent configuration
 
@@ -217,12 +172,12 @@ Merge the optional `pi-settings.json` into `~/.pi/agent/settings.json` (or your
 project's `.pi/settings.json`). Do not replace unrelated existing settings.
 Restart Pi after installing the files.
 
-The generated entries are `qwen3.8` and `qwen-uncensored`, both with the INI's
+The generated entry is `qwen-uncensored`, with the INI's
 160000-token context. The draft GGUF is managed by BeeLlama, not exposed as a Pi model.
-GPU, KV-cache and DFlash settings remain server-side. Neither model advertises
+GPU, KV-cache and DFlash settings remain server-side. The model does not advertise
 image input without a configured `mmproj`.
 
-Qwen3.8 exposes **off, low, medium, high, xhigh** in Pi. Selecting high sends
+The Qwen3.8-based uncensored model exposes **off, low, medium, high, xhigh** in Pi. Selecting high sends
 xhigh because Qwen3.8 does not support high natively; models with the standard
 mapping keep high as high. Unsupported minimal and max levels are hidden using
 null entries. Generic `chat-template` compatibility
@@ -238,7 +193,7 @@ The output limit remains **64000 tokens including thinking**, configurable with
 `--max-tokens`.
 
 The optional settings fragment sets each model's initial thinking level from
-`reasoning-effort` (currently xhigh), restricts model cycling to these two entries,
+`reasoning-effort` (currently medium), restricts model cycling to this entry,
 and enables automatic compaction. Each model reserves its output limit plus
 4096 tokens of margin: **68096 reserved**, with **20000 recent tokens retained**.
 At 160000 context, this puts the compaction threshold around **91904 tokens**.
@@ -279,36 +234,35 @@ Other optional Pi settings worth considering:
 - `pi --offline` disables startup network operations while keeping the configured
   local inference endpoint usable. This is separate from Docker network isolation.
 
-Select the normal model with `pi --provider local-llama --model qwen3.8 --thinking xhigh`.
-Use `/thinking` to change effort and `/model` to switch models. Switching models
-will cause BeeLlama to unload the other model because the router allows one at a time.
+Select the model with `pi --provider local-llama --model qwen-uncensored --thinking medium`.
+Use `/thinking` to change effort. This stack serves only `qwen-uncensored`.
 
 # Normal usage
 
-Start the stack in the background:
+Start the stack with live logs in the terminal, using the downloaded images:
 
 ```bash
-docker compose up -d
+docker compose up
 ```
 
-Stop and remove the containers and Docker networks, while keeping the built images and `./models` files:
+Press Ctrl+C to stop the stack. To also remove the containers and Docker networks,
+while keeping downloaded images and `./models` files:
 
 ```bash
 docker compose down
 ```
 
-Rebuild the LLM image when you change build args, CUDA version, Ubuntu version, or want to pick up a newer BeeLlama source version:
+When you want to update, stop the attached stack with Ctrl+C, then fetch the latest
+published CUDA 13 image and start again with live logs:
 
 ```bash
-docker compose up -d --build
+docker compose pull llm
+docker compose up
 ```
 
-Force a fresh rebuild without cached Docker layers:
-
-```bash
-docker compose build --no-cache llm
-docker compose up -d
-```
+Only the pull step needs registry access when the images are already on disk.
+Docker downloads missing or changed layers; normal `up` runs keep using that image
+until you explicitly pull an update.
 
 Avoid this unless you intentionally want to delete named Docker volumes:
 

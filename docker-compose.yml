@@ -13,33 +13,45 @@ services:
       - llm
 
   llm:
-    image: ${LLAMA_IMAGE:-local/beellama-cuda-server:latest}
-    build:
-      context: ${BEELLAMA_REPO:-https://github.com/Anbeeld/beellama.cpp.git}
-      dockerfile: .devops/cuda.Dockerfile
-      target: server
-      args:
-        UBUNTU_VERSION: ${UBUNTU_VERSION:-24.04}
-        CUDA_VERSION: ${CUDA_VERSION:-13.3.0}
-        CUDA_DOCKER_ARCH: ${CUDA_DOCKER_ARCH:-default}
-        CUDA_BUILD_TARGET: llama-server
+    image: ghcr.io/anbeeld/beellama.cpp:server-cuda13
+    pull_policy: missing
     restart: unless-stopped
-    command:
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8080"
-      - --models-preset
-      - /models/models.ini
-      - --models-max
-      - "1"
+    command: >-
+      --host 0.0.0.0
+      --port 8080
+      --alias qwen-uncensored
+      --model /models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf
+      --model-draft /models/Qwen3.8-27B-DFlash2-Q4_K_M.gguf
+      --spec-type draft-dflash
+      --spec-draft-ngl all
+      --spec-draft-n-max 7
+      --n-gpu-layers all
+      --parallel 1
+      --ctx-size 160000
+      --kv-unified
+      --batch-size 2048
+      --ubatch-size 512
+      --flash-attn on
+      --cache-type-k kvarn5
+      --cache-type-v kvarn4
+      --kv-tail-tokens 1024
+      --load-mode dio
+      --no-host
+      --jinja
+      --chat-template-file /models/Qwen-sharp.jinja
+      --reasoning on
+      --temp 1.0
+      --top-k 20
+      --top-p 0.95
+      --min-p 0.0
+      --sleep-idle-seconds 900
     gpus: all
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     expose:
       - "8080"
-    shm_size: ${LLM_SHM_SIZE:-16gb}
+    shm_size: 16gb
     ulimits:
       memlock: -1
       stack: 67108864
