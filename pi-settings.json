@@ -1,6 +1,6 @@
 {
   "modelThinkingLevels": {
-    "local-llama/qwen-uncensored": "xhigh",
+    "local-llama/qwen-uncensored": "medium",
     "local-llama/qwen3.8": "xhigh"
   },
   "enabledModels": [
