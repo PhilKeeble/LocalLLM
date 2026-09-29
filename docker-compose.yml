@@ -11,6 +11,18 @@ services:
       - llm_internal
     depends_on:
       - llm
+      - kb
+
+  kb:
+    build: ./kb
+    restart: unless-stopped
+    expose:
+      - "8000"
+    volumes:
+      - ./knowledge:/documents:ro
+      - kb_index:/data
+    networks:
+      - llm_internal
 
   llm:
     image: ghcr.io/anbeeld/beellama.cpp:server-cuda13
@@ -20,9 +32,11 @@ services:
       --host 0.0.0.0
       --port 8080
       --alias qwen-uncensored
-      --model /models/Qwen3.8-27B-TTURBO-Fable-C-Fusion-709-L-Uncen-NM-DAU-NEO-MTP-Q4_K_M.gguf
-      --spec-type draft-mtp
-      --spec-draft-n-max 2
+      --model /models/OrcaSAQ-2-27B-Uncensored.gguf
+      --model-draft /models/Qwen3.8-27B-DFlash2-Q4_K_M.gguf
+      --spec-type draft-dflash
+      --spec-draft-n-max 7
+      --spec-draft-ngl all
       --n-gpu-layers all
       --parallel 1
       --ctx-size 212992
@@ -62,3 +76,6 @@ networks:
   ingress:
   llm_internal:
     internal: true
+
+volumes:
+  kb_index:

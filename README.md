@@ -6,6 +6,17 @@ This Compose stack publishes Caddy on `0.0.0.0:8080` so other devices on your ne
 
 The LLM container is only attached to the `llm_internal` Docker network, which is marked `internal: true`. It does not publish ports directly to the host. Caddy is attached to both networks and proxies requests to `llm:8080`.
 
+The `kb` service shares the internal network and serves the personal Markdown
+knowledge base. Caddy routes `/kb/*` to it; other requests keep using the model
+API. The library is in `knowledge/`, with optional YAML categories; its index and
+historical revisions persist in the `kb_index` volume. Pi automatically retrieves
+reference passages on every task through its configured knowledge extension.
+See [knowledge service](kb/README.md) for indexing, API, and validation details.
+See [library layout](kb/LIBRARY.md) for organised PE/C++ examples and growth tests.
+Pi has read-only knowledge access. Review sessions externally and edit the host
+Markdown library to add verified lessons; document changes are indexed automatically.
+Build the new service with `docker compose build kb` before the normal startup.
+
 # Install / Setup
 
 Clone this repository directly inside your WSL Ubuntu filesystem, not under `/mnt/c/...`.

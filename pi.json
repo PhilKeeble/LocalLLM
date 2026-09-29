@@ -1,0 +1,46 @@
+{
+  "providers": {
+    "local-llama": {
+      "baseUrl": "http://localhost:8080/v1",
+      "api": "openai-completions",
+      "apiKey": "pi",
+      "authHeader": true,
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsUsageInStreaming": true,
+        "maxTokensField": "max_tokens"
+      },
+      "models": [
+        {
+          "id": "qwen-uncensored",
+          "name": "Qwen Uncensored",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 212992,
+          "maxTokens": 32000,
+          "thinkingLevelMap": {
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "xhigh",
+            "xhigh": "xhigh",
+            "max": null
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template"
+          },
+          "samplingParams": {
+            "temperature": 0.6,
+            "top_k": 20,
+            "top_p": 0.95,
+            "min_p": 0.0
+          }
+        }
+      ]
+    }
+  }
+}

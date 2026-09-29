@@ -1,4 +1,4 @@
 *.gguf
-pi.json
 __pycache__/
 *.py[cod]
+/models/*.guff

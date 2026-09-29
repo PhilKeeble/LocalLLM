@@ -9,8 +9,8 @@
     "enabled": true,
     "modelOverrides": {
       "local-llama/qwen-uncensored": {
-        "reserveTokens": 68096,
-        "keepRecentTokens": 20000
+        "reserveTokens": 32000,
+        "keepRecentTokens": 32000
       }
     }
   }
