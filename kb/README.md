@@ -25,8 +25,8 @@ The `kb` refresh does not require restarting the model service.
 
 ## Documents and front matter
 
-See [library organisation and quality checks](LIBRARY.md) for the PE/C++ folder
-layout, authoring rules, review flow, and repeatable growth regression suite.
+See [library organisation and quality checks](LIBRARY.md) for the folder
+layout, authoring rules and review flow.
 
 All UTF-8 `*.md` files beneath `knowledge/` are indexed. Front matter is optional:
 
@@ -75,16 +75,26 @@ curl http://localhost:8080/kb/search -H 'Content-Type: application/json' \
 ```
 
 Filters are exact `kind`, `topic`, `platform`, `architecture` matches and combine
-with AND. Search normalizes C++/cxx to cpp, drops common query stopwords, and ORs
-the remaining terms using quoted FTS literals. Titles and metadata are indexed
-with every chunk. It computes BM25 scores; lower is stronger. This is lexical
+with AND. Search normalizes technical spellings consistently in queries and
+documents: C++/cxx to cpp, C# to csharp, .NET to dotnet, P/Invoke/pinvoke to
+pinvoke, and UTF-8/UTF8 to utf8 (likewise UTF-16 and UTF-32, retaining LE/BE
+suffixes). Common stopwords and vs/versus are removed. Remaining distinct query
+terms are ORed using quoted FTS literals. Document word frequencies are retained.
+Titles and metadata are indexed with every chunk. BM25 weights the title/metadata,
+heading and body columns by 3, 2 and 1; lower scores are stronger. This is lexical
 matching, not semantic understanding. The default query is not automatically
 restricted by inferred topic, architecture, or OS.
 
-`matches` exposes **all collected lexical matches** through deterministic
-source/offset pagination (`total`, `offset`, `returned`, `truncated`,
-`next_offset`). Nonzero offsets require the original `index_revision`; a changed
-generation returns 409 and instructs a fresh search. There is no hidden hit cap.
+`matches` returns the **best ten passages by default**, selected across all
+matching chunks by ascending BM25 score before pagination. `limit` can explicitly
+request 1-20 passages. Source ID and chunk start only break equal-score ties.
+Each match includes its one-based `rank`. `total` counts all lexical candidates,
+not confidently relevant answers; there is no semantic relevance threshold.
+Further candidates remain available in the same relevance order through
+`offset`/`next_offset`. Nonzero offsets require the original `index_revision`;
+a changed generation returns 409 and instructs a fresh search. Index-format
+changes also invalidate pagination and rebuild the active index automatically,
+without removing historical source revisions or their citations.
 The optional `context_matches` is explicitly a separate top-BM25 selection,
 presented in source order with ranks. `context_selection` states its budget,
 omitted count, and how to retrieve the complete evidence. Pi injects this bounded
@@ -115,15 +125,10 @@ reads still work. Empty libraries/no hits are explicit. Files over 32 MiB must
 be split into chapters. The first version rescans file contents and is intended
 for a small pilot; benchmark before importing a large library.
 
-## Validation
+## Verification
 
-```sh
-docker run --rm --entrypoint python -v "$PWD:/repo:ro" -w /repo/kb \
-  localllm-kb -B -m unittest -v test_server
-```
-
-Tests cover both initial documents, ranked-context relevance, complete pages,
-source coordinates, revision retention, deletion, changed-index recovery,
-Unicode/oversized lines, metadata filters/renames, malformed metadata, and HTTP
-validation. Pi loader/focus/model exercises live in the sibling `pi` repository
-under `tests/knowledge`. No model call is needed for these server tests.
+For retrieval-code changes, check representative agent queries through `/search`,
+including the returned order, technical query terms and exact citation reads.
+The former `test_server.py` and `retrieval_eval.py` scripts were removed; they
+did not validate first-page relevance for the primary explicit-search workflow.
+Documentation-only additions do not require retrieval test runs.

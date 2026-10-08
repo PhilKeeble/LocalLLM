@@ -5,6 +5,14 @@ RAG service, its retrieval behavior, tests or integration, read
 [`kb/LIBRARY.md`](kb/LIBRARY.md) in full.
 
 `kb/LIBRARY.md` is the source of truth for the knowledge-base design, folder
-responsibilities, document structure, metadata, external-review workflow and
-validation. Follow it rather than duplicating those rules here. If an authorized
-change alters that design, update `kb/LIBRARY.md` in the same change.
+responsibilities, content quality, document structure, metadata, external-review
+workflow and validation. Apply its requirements to every future knowledge edit:
+the result must be accurate, useful during investigation and concise enough for
+each retrieved passage to stand alone with its necessary scope and caveats.
+
+Verify factual claims against primary sources, favor durable concepts and review
+affected sections in isolation before accepting the change. Summarize the actual
+source/content/static review and its limits; do not claim retrieval effectiveness
+from documentation checks. Follow the detailed rules in `kb/LIBRARY.md` rather
+than maintaining a second rule set here. If an authorized change alters the
+library design, update `kb/LIBRARY.md` in the same change.

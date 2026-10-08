@@ -14,6 +14,7 @@ import yaml
 from errors import RequestError
 
 API_VERSION = 1
+INDEX_FORMAT = "technical-tokens-v2-bm25"
 CHUNK_CHARS = 1800
 STOP = set("a an the is are was were be been being to of in on at for from with and or if then it its this that these those i me my you your we our they their please can could would should will do does did have has how what which when where why use using used write create implement make give explain tell about as by into all any just some task file files code function functions return returns need want look review inspect analyze analyse".split())
 
@@ -22,10 +23,20 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def terms(text: str) -> list[str]:
-    text = re.sub(r"c\+\+|\bcxx\b", " cpp ", text.lower())
-    return list(dict.fromkeys(t for t in re.findall(r"0x[0-9a-f]+|[a-z_][a-z0-9_]*|[0-9]+", text)
-                             if t not in STOP and len(t) > 1))
+def terms(text: str, *, unique: bool = True) -> list[str]:
+    """Use the same technical spelling normalization for queries and documents."""
+    text = text.lower().translate(str.maketrans({c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2212"}))
+    text = re.sub(r"\bc\+\+|\bcxx\b", " cpp ", text)
+    text = re.sub(r"\bc#", " csharp ", text)
+    text = re.sub(r"(?<!\w)\.net\b", " dotnet ", text)
+    text = re.sub(r"\bp(?:\s*/\s*|[- ]?)invokes?\b", " pinvoke ", text)
+    text = re.sub(r"\butf[-_ ]?(8|16|32)(le|be)?\b",
+                  lambda m: " utf" + m[1] + (m[2] or "") + " ", text)
+    tokens = [t for t in re.findall(r"0x[0-9a-f]+|[a-z_][a-z0-9_]*|[0-9]+", text)
+              if t not in STOP and t not in {"vs", "versus"} and len(t) > 1]
+    # Repeated query words should not add weight. Document frequencies must be
+    # preserved so BM25 measures occurrences and passage length, not unique words.
+    return list(dict.fromkeys(tokens)) if unique else tokens
 
 
 def chunks(text: str):
@@ -146,7 +157,7 @@ class Index:
                     ids.add(source_id)
                     title = meta.get("title") or next((line[2:].strip() for line in text[body_start:].splitlines() if line.startswith("# ")), source_id)
                     sources.append((source_id, digest(text), title, text, meta, body_start))
-                revision = digest(json.dumps(["metadata-v1", [(s[0], s[1], s[4]) for s in sources]]))
+                revision = digest(json.dumps([INDEX_FORMAT, [(s[0], s[1], s[4]) for s in sources]]))
                 if revision != self.revision():
                     with self.db:
                         self.db.execute("DELETE FROM current")
@@ -163,8 +174,8 @@ class Index:
                                     (source_id, source_rev, heading, start, end, text.count("\n", 0, start) + 1,
                                      text.count("\n", 0, max(start, end - 1)) + 1, body))
                                 self.db.execute("INSERT INTO search(rowid,title,heading,body) VALUES (?,?,?,?)",
-                                    (cursor.lastrowid, " ".join(terms(title + " " + source_id + " " + meta["kind"] + " " + " ".join(meta["topics"] + meta["platforms"] + meta["architectures"]))),
-                                     " ".join(terms(heading)), " ".join(terms(body))))
+                                    (cursor.lastrowid, " ".join(terms(title + " " + source_id + " " + meta["kind"] + " " + " ".join(meta["topics"] + meta["platforms"] + meta["architectures"]), unique=False)),
+                                     " ".join(terms(heading, unique=False)), " ".join(terms(body, unique=False))))
                         self.db.execute("INSERT OR REPLACE INTO metadata VALUES ('revision',?)", (revision,))
                 self.error = None
             except (OSError, UnicodeError, ValueError, sqlite3.Error, yaml.YAMLError) as exc:
@@ -183,7 +194,7 @@ class Index:
     def search(self, data):
         query = string(data, "query")
         offset = integer(data, "offset", 0, 0, 100000000)
-        limit = integer(data, "limit", 8, 1, 20)
+        limit = integer(data, "limit", 10, 1, 20)
         context_limit = integer(data, "context_limit", 0, 0, 20)
         tokens = terms(query)
         if len(tokens) > 512:
@@ -216,10 +227,11 @@ class Index:
             total, matches, context_matches = 0, [], []
             if tokens:
                 total = self.db.execute(f"SELECT count(*) FROM {join} WHERE {where}", args).fetchone()[0]
-                rows = self.db.execute(f"SELECT c.*, m.metadata, bm25(search,3,2,1) AS score FROM {join} WHERE {where} ORDER BY c.source_id,c.start LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
-                for row in rows:
+                rows = self.db.execute(f"SELECT c.*, m.metadata, bm25(search,3,2,1) AS score FROM {join} WHERE {where} ORDER BY score,c.source_id,c.start LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
+                for rank, row in enumerate(rows, offset + 1):
                     item = dict(row)
                     item.pop("id")
+                    item["rank"] = rank
                     item["metadata"] = json.loads(item["metadata"])
                     item["citation"] = f"kb:{item['source_id']}@{item['revision']}:{item['start']}-{item['end']}"
                     matches.append(item)
@@ -243,8 +255,8 @@ class Index:
                     context_matches.sort(key=lambda item: (item["source_id"], item["start"]))
             next_offset = offset + len(matches) if offset + len(matches) < total else None
             return dict(api_version=API_VERSION, ok=True, status="no_matches" if not total else "truncated" if next_offset is not None else "success",
-                        index_revision=revision, query=query, query_terms=tokens, filters=filters, order="source_id,start",
-                        score_note="BM25; lower scores indicate stronger lexical matches. Rows are in source order.",
+                        index_revision=revision, query=query, query_terms=tokens, filters=filters, order="score,source_id,start",
+                        score_note="BM25; lower scores indicate stronger lexical matches. Best matches first; source_id and start break ties.",
                         collection_partial=False, total=total, offset=offset, returned=len(matches),
                         truncated=next_offset is not None, next_offset=next_offset, matches=matches,
                         context_selection={"method": "BM25: retain best two candidates, then require 65% of best score magnitude; exclude unreviewed; present in source order", "limit": context_limit,
@@ -252,7 +264,7 @@ class Index:
                                            "relative_score_floor": 0.65,
                                            "excluded_topic": "unreviewed",
                                            "selected": len(context_matches), "omitted": total - len(context_matches),
-                                           "complete_evidence": "Page /search matches in source order; context_matches is a selected context packet, not the complete search result."},
+                                           "complete_evidence": "Page /search matches in BM25 relevance order; context_matches is a selected context packet, not the complete search result."},
                         context_matches=context_matches)
 
     def read(self, data):
