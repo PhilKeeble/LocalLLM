@@ -16,6 +16,8 @@ from errors import RequestError
 API_VERSION = 1
 INDEX_FORMAT = "technical-tokens-v2-bm25"
 CHUNK_CHARS = 1800
+VULNERABILITY_RESULT_LIMIT = 4
+SUPPORTING_RESULT_LIMIT = 10
 STOP = set("a an the is are was were be been being to of in on at for from with and or if then it its this that these those i me my you your we our they their please can could would should will do does did have has how what which when where why use using used write create implement make give explain tell about as by into all any just some task file files code function functions return returns need want look review inspect analyze analyse".split())
 
 
@@ -77,7 +79,7 @@ def metadata(text: str, path: str):
     result = {"id": path, "kind": "reference", "topics": [], "platforms": [], "architectures": [], **values, "path": path}
     if not isinstance(result["id"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}", result["id"]):
         raise ValueError(f"Invalid document id in {path}")
-    if result["kind"] not in ("playbook", "reference", "note"):
+    if result["kind"] not in ("playbook", "reference", "note", "vulnerability"):
         raise ValueError(f"Invalid kind in {path}")
     if "title" in result and (not isinstance(result["title"], str) or not 0 < len(result["title"]) <= 300):
         raise ValueError(f"Invalid title in {path}")
@@ -191,6 +193,19 @@ class Index:
                         chunks=self.db.execute("SELECT count(*) FROM chunks").fetchone()[0], error=self.error,
                         recovery="Correct the Markdown library; indexing retries on the next request after five seconds." if self.error else None)
 
+    @staticmethod
+    def _result_items(rows):
+        items = []
+        for raw_rank, row in enumerate(rows, 1):
+            item = dict(row)
+            item.pop("id")
+            item["metadata"] = json.loads(item["metadata"])
+            item["raw_rank"] = raw_rank
+            item["rank"] = raw_rank
+            item["citation"] = f"kb:{item['source_id']}@{item['revision']}:{item['start']}-{item['end']}"
+            items.append(item)
+        return items
+
     def search(self, data):
         query = string(data, "query")
         offset = integer(data, "offset", 0, 0, 100000000)
@@ -225,33 +240,39 @@ class Index:
                 args.append(value)
             join = "search JOIN chunks c ON c.id=search.rowid JOIN source_metadata m ON m.source_id=c.source_id AND m.revision=c.revision"
             total, matches, context_matches = 0, [], []
+            vulnerability_matches, supporting_matches = [], []
+            vulnerability_total, supporting_total = 0, 0
             if tokens:
                 total = self.db.execute(f"SELECT count(*) FROM {join} WHERE {where}", args).fetchone()[0]
-                rows = self.db.execute(f"SELECT c.*, m.metadata, bm25(search,3,2,1) AS score FROM {join} WHERE {where} ORDER BY score,c.source_id,c.start LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
-                for rank, row in enumerate(rows, offset + 1):
-                    item = dict(row)
-                    item.pop("id")
-                    item["rank"] = rank
-                    item["metadata"] = json.loads(item["metadata"])
-                    item["citation"] = f"kb:{item['source_id']}@{item['revision']}:{item['start']}-{item['end']}"
-                    matches.append(item)
+                rows = self.db.execute(f"SELECT c.*, m.metadata, bm25(search,3,2,1) AS score FROM {join} WHERE {where} ORDER BY score,c.source_id,c.start", args).fetchall()
+                raw_items = self._result_items(rows)
+                matches = raw_items[offset:offset + limit]
+                vulnerabilities = [item for item in raw_items if item["metadata"]["kind"] == "vulnerability"]
+                supporting = [item for item in raw_items if item["metadata"]["kind"] in ("reference", "playbook")]
+                vulnerability_total = len(vulnerabilities)
+                supporting_total = len(supporting)
+                for vulnerability_rank, item in enumerate(vulnerabilities[:VULNERABILITY_RESULT_LIMIT], 1):
+                    grouped = dict(item)
+                    grouped["vulnerability_rank"] = vulnerability_rank
+                    vulnerability_matches.append(grouped)
+                for supporting_rank, item in enumerate(supporting[:SUPPORTING_RESULT_LIMIT], 1):
+                    grouped = dict(item)
+                    grouped["supporting_rank"] = supporting_rank
+                    supporting_matches.append(grouped)
                 if context_limit:
-                    # Complete search evidence remains available, but provisional
-                    # learned notes must not silently become automatic guidance.
-                    context_where = where + " AND NOT EXISTS(SELECT 1 FROM json_each(m.metadata,'$.topics') WHERE value='unreviewed')"
-                    ranked = self.db.execute(f"SELECT c.*, m.metadata, bm25(search,3,2,1) AS score FROM {join} WHERE {context_where} ORDER BY score,c.source_id,c.start LIMIT ?", args + [context_limit]).fetchall()
-                    # A limit is a ceiling, not a quota. Avoid padding a good
-                    # match with much weaker passages just to fill the packet.
-                    best_score = ranked[0]["score"] if ranked else 0
-                    ranked = [row for position, row in enumerate(ranked)
-                              if position < 2 or row["score"] <= best_score * 0.65]
-                    for rank, row in enumerate(ranked, 1):
-                        item = dict(row)
-                        item.pop("id")
-                        item["metadata"] = json.loads(item["metadata"])
-                        item["rank"] = rank
-                        item["citation"] = f"kb:{item['source_id']}@{item['revision']}:{item['start']}-{item['end']}"
-                        context_matches.append(item)
+                    # Provisional learned notes must not become automatic guidance.
+                    # A limit is a ceiling, not a quota: retain the best two raw
+                    # candidates, then require 65% of the best score magnitude.
+                    context_raw = [item for item in raw_items if "unreviewed" not in item["metadata"]["topics"]]
+                    best_score = context_raw[0]["score"] if context_raw else 0
+                    selected = [item for position, item in enumerate(context_raw[:context_limit])
+                                if position < 2 or abs(item["score"]) >= abs(best_score) * 0.65]
+                    context_matches = []
+                    for context_rank, item in enumerate(selected, 1):
+                        grouped = dict(item)
+                        grouped["rank"] = context_rank
+                        grouped["context_rank"] = context_rank
+                        context_matches.append(grouped)
                     context_matches.sort(key=lambda item: (item["source_id"], item["start"]))
             next_offset = offset + len(matches) if offset + len(matches) < total else None
             return dict(api_version=API_VERSION, ok=True, status="no_matches" if not total else "truncated" if next_offset is not None else "success",
@@ -259,12 +280,18 @@ class Index:
                         score_note="BM25; lower scores indicate stronger lexical matches. Best matches first; source_id and start break ties.",
                         collection_partial=False, total=total, offset=offset, returned=len(matches),
                         truncated=next_offset is not None, next_offset=next_offset, matches=matches,
+                        result_groups={"method": "Independent raw-BM25 rankings preserve the complete paginated matches while exposing vulnerability and supporting evidence separately.",
+                                       "vulnerability_limit": VULNERABILITY_RESULT_LIMIT, "vulnerability_total": vulnerability_total,
+                                       "vulnerability_returned": len(vulnerability_matches),
+                                       "supporting_kinds": ["reference", "playbook"], "supporting_limit": SUPPORTING_RESULT_LIMIT,
+                                       "supporting_total": supporting_total, "supporting_returned": len(supporting_matches)},
+                        vulnerability_matches=vulnerability_matches, supporting_matches=supporting_matches,
                         context_selection={"method": "BM25: retain best two candidates, then require 65% of best score magnitude; exclude unreviewed; present in source order", "limit": context_limit,
                                            "protected_top_ranks": 2,
                                            "relative_score_floor": 0.65,
                                            "excluded_topic": "unreviewed",
                                            "selected": len(context_matches), "omitted": total - len(context_matches),
-                                           "complete_evidence": "Page /search matches in BM25 relevance order; context_matches is a selected context packet, not the complete search result."},
+                                           "complete_evidence": "Page /search matches remain in complete BM25 relevance order; grouped results and context_matches are bounded selections."},
                         context_matches=context_matches)
 
     def read(self, data):
